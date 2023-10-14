@@ -1,52 +1,18 @@
-## How to secure OpenShift routes exposed through an Aws Cloud Front
-
-When you are using an Aws Cloud Front Front Door with public IP address-based origins, you should ensure that traffic flows through your Cloud Front instance.
-Aws documentation instructs how to make sure that the traffic origns from the proper Cloud Front:
-
-- [Cloud Front Identifier](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/add-origin-custom-headers.html) When Cloud Front makes a request to your origin, it adds the custom header (es. `X-Aws-CFID`) request header. Your origin should inspect the header on incoming requests, and reject requests where the value doesn't match your Cloud Front profile's identifier.
-
-When an Aws Cloud Front with public IP address-based origins is used, Aws suggests to use mentioned method above.
-
-The Cloud Front Identifier must be verified at the application level checking the HTTP custom header (es. `X-Aws-CFID`).
-
-At the moment of writing Red Hat OpenShift does not provide any feature to check the Cloud Front Identifier, thus the check should be delegated to the application itself or an API Gateway in front of the cluster.
-
-There is an RFE (ID RFE-4087) to implement the Cloud Front Identifier check directly into the ingress router:
-The Red Hat Engineering constraints about realization of an RFE on this topic are changed respect to that already accepted for the similar scenario on Azure FrontDoor, and now they require the use of Ingress Operator API.
-At the moment the RFE is without a defined timeline.
-
-Until the mentioned RFE is not implemented the only way to validate the Cloud Front Identifier at the OpenShift Ingress level is to deploy a customized router.
-The custom router will use a modified HAProxy configuration template that implements the feature.
-The customization applies an HAProxy ACL 
+## How to create a custom shard router not managed by the operator
 
 **NOTE:** Before deploying a custom router, please make sure to read and understand the Disclaimer section of this document.
 
 ### Deploying a custom router
 
-In order to deploy a customized router there are two options:
-
-#### Replacing the default ingress router
-
-This approach basically replaces the default ingress router with a customized router instance.
-A prerequisite is to disable the Ingress Router Operator in order to apply the customizations without being reconciliated by the controller.
-Once the Ingress Router Operator is scaled to zero and the default ingress router deployment is un managed, it is possible to apply all the customizations.
-
-If the `LoadBalancer` service exposing the router is recreated with a different IP address when the Ingress Router Operator is disabled, the DNS entry for the `*.apps.<cluster>.<domain>` is not automatically updated.
-
 #### Adding a router shard with the customizations
 
-This different approach does not requires to disable the Ingress Router Operator because the customized router is installed through a custom `Deployment` as a router shard.
+This approach does not requires to disable the Ingress Router Operator because the customized router is installed through a custom `Deployment` as a router shard.
 Using a router shard requires an additional application FQDN (the so colled ingress wildcard domain).
 The DNS entry for the FQDN needs to be managed manually or via the External DNS operator.
 
-#### Comparision
+#### Requirements
 
-| | Default Ingress replacement | Rotuer Sharding |
-| --- | --- | --- |
-| Needs to disable an operator | yes | no |
-| Requires an additional URL | yes | no |
-| DNS management | suggested | needed |
-| Impacts on infrastructural workloads | yes | no |
+DNS management needed
 
 ## Deploy the test application:
 
@@ -60,17 +26,11 @@ $ oc new-app https://github.com/sclorg/cakephp-ex
 
 2. Expose the service:
 
-Depending if you are using a router shard you may need to set the proper route hostname
+You may need to set the proper route hostname
 
 ```
 $ ROUTE_HOSTNAME=cachephp-ex.shard.ocp.example.com
 $ oc expose svc cakephp-ex --hostname ${ROUTE_HOSTNAME}
-```
-
-3. Annotate the route in order to be secured: 
-
-```
-$ oc annotate route cakephp-ex haproxy.router.openshift.io/aws-cloud-front-id=1234
 ```
 
 4. Optional: in case you are using a shard, you will need to annotate the route in order to "land" on the proper router instance, `type=shard` is just an example here, the label must match the `routeSelector` of the shard:
@@ -79,23 +39,13 @@ $ oc annotate route cakephp-ex haproxy.router.openshift.io/aws-cloud-front-id=12
 $ oc label route cakephp-ex -n cakephp-ex type=sharded
 ```
 
-### Tesing the application
-
-If the `haproxy.router.openshift.io/aws-cloud-front-id` annotation is present and you are not sendig the header `X-Aws-CFID` with a proper value you must get a `403 Forbidden`.
-
-The following curl command should work with the annotation in the example above.
-
-```
-curl -H 'X-Aws-CFID: 1234' http://${ROUTE_HOSTNAME}
-```
-
 ## Creating an unmanaged router shard
 
-### Segregate the default router
+### Segregate the default router - OPTIONAL
 
 **ACTION GOAL:** run the default router pods on a predefinite set of worker nodes. Is not needed if you are willing to execute the default router and the shard on the same set of nodes
 
-In the following steps we will segregate the default router to be hosted only on nodes with the `router-sharded: yes`.
+In the following steps we will segregate the default router to be hosted only on nodes with the `router-sharded: no`.
 
 Add the `nodePlacement` to the default IngressController:
 
@@ -112,7 +62,7 @@ spec:
 [...]
 ```
 
-### Excluding the sharded routes from the default router
+### Excluding the sharded routes from the default router - DESIRED
 
 **ACTION GOAL:** exclude from the default router all the routes with a specific label
 
@@ -136,9 +86,6 @@ This section documents how to create a shard using the Ingress Operator, deployn
 
 **NOTE:** the deployed router cannot be customized because is managed by the Ingress operator, every change will be reconciliated.
 This is useful just to have all the needed resources to use as a skeleton for the manual deployment.
-
-If we need to segregate the routers (default and the shard) on different sets of nodes, is possible to define a `nodePlacement` section.
-With the `routeSelector` field, the shard will take care *only* of the routes with label `type: sharded`:
 
 ```
 $ export DOMAIN_NAME=shard.ocp.example.com
@@ -173,7 +120,7 @@ Before creating a manual shard you will need to remove the managed shard: `oc de
 
 In order to be able to customize the router configuration of a shard, the router must not be managed by the Ingress Controller, otherwise every change will be reconciliated by the operator.
 For that reason we have to deploy an "unmanaged" router. This repo contains an Helm chart with all the needed resources.
-The Helm templates are created out of shard from a 4.9.11 OCP cluster, deploying this Helm chart on a different version requires a double-check of the resources.
+The Helm templates are created out of shard from a 4.13.11 OCP cluster, deploying this Helm chart on a different version requires a double-check of the resources.
 
 1. Clone this repo `git clone https://github.com/pbertera/OCP-Securing-Azure-FD.git && cd OCP-Securing-Azure-FD`
 2. Configure the `helm/values.yaml`:
