@@ -29,5 +29,5 @@ httpRouterPort: 80
 httpsRouterPort: 443
 metricsRouterPort: 1936
 customHAProxyTemplate:
-  useCustomTemplate: true
+  useCustomTemplate: false
   file: haproxy-config.template
