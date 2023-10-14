@@ -120,15 +120,15 @@ Before creating a manual shard you will need to remove the managed shard: `oc de
 
 In order to be able to customize the router configuration of a shard, the router must not be managed by the Ingress Controller, otherwise every change will be reconciliated by the operator.
 For that reason we have to deploy an "unmanaged" router. This repo contains an Helm chart with all the needed resources.
-The Helm templates are created out of shard from a 4.13.11 OCP cluster, deploying this Helm chart on a different version requires a double-check of the resources.
+The Helm templates are created out of shard from a 4.12.28 OCP cluster, deploying this Helm chart on a different version requires a double-check of the resources.
 
-1. Clone this repo `git clone https://github.com/pbertera/OCP-Securing-Azure-FD.git && cd OCP-Securing-Azure-FD`
+1. Clone this repo `git clone https://github.com/samuano76/OpenShift-Sispi-CustomRoute-HAProxy26.git`
 2. Configure the `helm/values.yaml`:
     - `ingressFQDN` is the wildcard application FQDN for the shard
     - `tlsCert` and `tlsKey` are the certificate and the key used by the router (must match the `ingressFQDN`)
     - `routeLabels` defines the route selector that this shard will use
     - `image` is the router image, you can get it from the default router: `oc get deploy -n openshift-ingress router-default -o jsonpath="{.spec.template.spec.containers[0].image}"`
-    - `useInternalLB` if an Internal Load Balancer should be instantiate or not, accepted values are `aws`, `azure, `gcp`.
+    - `useInternalLB` if an Internal Load Balancer should be instantiate or not, in case is used accepted values are `aws`, `azure, `gcp`.
     - `service` section to custimize the  external service used to expose the router
        - `annotations` annotations to add to the service
        - `type` the  service type
@@ -149,46 +149,11 @@ We need to create a DNS A record for the wildcard application FQDN of the shard 
 The chart will deploy a router into the `openshift-ingress` namespace which is not handled by the Ingress Operator.
 If the `customHAProxyTemplate.useCustomTemplate` is not set the deployed router will not use a custom template.
 
-## Default router customization
 
-As already highlited in order to customize the default router instance the router deplyment must not be managed by the Ingress Operator, thus as a first step we have to make the router unmanaged.
 
-### Making the default router unmanaged
+### Router customization - OPTIONAL
 
-**ACTION GOAL:** Instruct the Cluster Version operator to don't reconcile the Ingress Operator deployment, so we can scale to zero (disable) the Ingress Operator.
-
-If you want to customize the default ingress router you have to make it unmanaged, thus all the changes will be not reconciliated by the Ingress Operator.
-
-1. Create an override to make the ingress operator unmanaged
-
-```
-cat <<EOF >version-patch.yaml
-- op: add
-  path: /spec/overrides
-  value:
-  - kind: Deployment
-    group: apps
-    name: ingress-operator
-    namespace: openshift-ingress-operator
-    unmanaged: true
-EOF
-```
-
-2. Apply the patch:
-
-```
-oc patch clusterversion version --type json -p "$(cat version-patch.yaml)"
-```
-
-3. Scale down the Ingress operator:
-
-```
-oc scale deploy -n openshift-ingress-operator ingress-operator --replicas 0
-```
-
-### Router customization in order to secure requests coming from an Aws Cloud Front
-
-**ACTION GOAL:** apply the HAProxy template customizations in order to secure Fron Door requests as per Aws instructions.
+**ACTION GOAL:** apply the HAProxy template customizations
 
 1. Get the deployments names:
 
@@ -205,32 +170,6 @@ oc rsh -n openshift-ingress deploy/${ROUTER_NAME} cat haproxy-config.template > 
 ```
 
 2. Apply the patch:
-
-```
---- haproxy-config.template	2023-02-17 10:16:36.396787723 +0100
-+++ haproxy-config.template.fd	2023-02-17 10:19:03.618627532 +0100
-@@ -509,6 +509,10 @@
-         {{- with $value := clipHAProxyTimeoutValue (firstMatch $timeSpecPattern (index $cfg.Annotations "haproxy.router.openshift.io/timeout-tunnel")) }}
-   timeout tunnel  {{ $value }}
-         {{- end }}
-
-+        {{- if and (eq (index $cfg.Annotations "haproxy.router.openshift.io/azure-front-door-id") "") (eq (index $cfg.Annotations "haproxy.router.openshift.io/aws-cloud-front-+id") "") (eq (env "ROUTE_LABELS") "type=sharded")}}
-+  http-request deny
-+        {{- end }}
-
-+        {{- with $azureFrontDoorAnnotation := index $cfg.Annotations "haproxy.router.openshift.io/azure-front-door-id" }}
-+  acl azurefrontdoor req.hdr(X-Azure-FDID) -m str {{ $azureFrontDoorAnnotation }}
-+  http-request deny unless azurefrontdoor
-+        {{- end }}
-
-+        {{- with $awsCloudFrontAnnotation := index $cfg.Annotations "haproxy.router.openshift.io/aws-cloud-front-id" }}
-+  acl awscloudfront req.hdr(X-Aws-CFID) -m str {{ $awsCloudFrontAnnotation }}
-+  http-request deny unless awscloudfront
-+        {{- end }}
- 
-         {{- if isTrue (index $cfg.Annotations "haproxy.router.openshift.io/rate-limit-connections") }}
-   stick-table type ip size 100k expire 30s store conn_cur,conn_rate(3s),http_req_rate(10s)
-```
 
 3. Create the configmap with the template:
 
